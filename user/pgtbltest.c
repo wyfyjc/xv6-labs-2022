@@ -53,6 +53,7 @@ pgaccess_test()
 {
   char *buf;
   unsigned int abits;
+  printf("%d", sizeof(abits));
   printf("pgaccess_test starting\n");
   testname = "pgaccess_test";
   buf = malloc(32 * PGSIZE);

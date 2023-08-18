@@ -75,6 +75,25 @@ int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
+  uint64 beginAddr;
+  int totalPage;
+  uint64 abitsAddr;
+
+  //获取参数
+  argaddr(0, &beginAddr);
+  argint(1, &totalPage);
+  argaddr(2, &abitsAddr);
+
+  uint64 mask = 0;
+  struct proc *proc = myproc();
+  for (int i = 0; i < totalPage; i++) {
+    pte_t *pte = walk(proc->pagetable, beginAddr + i * PGSIZE, 0);
+    if (*pte & PTE_A) { // PTE_A为1
+      mask = mask | (1L << i); // 将mask中对应位置1
+    }
+    *pte = *pte & ~PTE_A; // 将PTE_A置0
+  }
+  copyout(proc->pagetable, abitsAddr, (char *)&mask, 8);
   return 0;
 }
 #endif
