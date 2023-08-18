@@ -20,3 +20,7 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
+//修改(trace)
+#define SYS_trace  22
+//修改(sysinfo)
+#define SYS_sysinfo 23

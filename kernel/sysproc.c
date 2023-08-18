@@ -6,6 +6,9 @@
 #include "spinlock.h"
 #include "proc.h"
 
+//修改（sysinfo）
+#include "sysinfo.h"
+
 uint64
 sys_exit(void)
 {
@@ -90,4 +93,36 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+//修改（trace）
+uint64
+sys_trace(void)
+{
+  int mask;
+  argint(0, &mask);
+  struct proc *p = myproc();
+  p->mask = mask;
+  return 0;
+}
+
+//修改（sysinfo）
+uint64
+sys_sysinfo(void)
+{
+  uint64 address;
+  argaddr(0, &address);
+  int process;
+  int freeMemory;
+  process = countProcess();
+  freeMemory = countFreeMemory();
+  struct sysinfo sysinfo;
+  sysinfo.freemem = freeMemory;
+  sysinfo.nproc = process;
+
+  struct proc *p = myproc();
+  if (copyout(p->pagetable, address, (char *)&sysinfo, sizeof(sysinfo)) < 0)
+    return -1;
+
+  return 0;
 }
