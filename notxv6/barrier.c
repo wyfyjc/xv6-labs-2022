@@ -30,7 +30,16 @@ barrier()
   // Block until all threads have called barrier() and
   // then increment bstate.round.
   //
-  
+  pthread_mutex_lock(&bstate.barrier_mutex);//上锁
+  if(++bstate.nthread < nthread) {//线程尚未全部达到barrier
+    pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);//令线程休眠
+  }
+  else {//线程已全部达到barrier
+    bstate.nthread = 0;
+    bstate.round++;
+    pthread_cond_broadcast(&bstate.barrier_cond);//唤醒所有线程
+  }
+  pthread_mutex_unlock(&bstate.barrier_mutex);//解锁
 }
 
 static void *
