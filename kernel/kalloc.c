@@ -9,6 +9,9 @@
 #include "riscv.h"
 #include "defs.h"
 
+int referenceNumber[PHYSTOP / PGSIZE];//记录引用数
+struct spinlock referenceLock;//访问引用数的互斥锁
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -51,6 +54,12 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  acquire(&referenceLock);
+  referenceNumber[(uint64)pa / PGSIZE]--;//引用数-1
+  release(&referenceLock);
+  if (referenceNumber[(uint64)pa / PGSIZE] > 0)//引用数大于0，说明还有进程使用此页面
+    return;
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -72,8 +81,12 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    acquire(&referenceLock);
+    referenceNumber[(uint64)r / PGSIZE] = 1;//初始引用数为1
+    release(&referenceLock);
+  }
   release(&kmem.lock);
 
   if(r)

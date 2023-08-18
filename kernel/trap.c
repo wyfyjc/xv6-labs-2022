@@ -65,6 +65,29 @@ usertrap(void)
     intr_on();
 
     syscall();
+  }
+  else if (r_scause() == 15) {//进程需要写入一个COW页时，发生Store/AMO page fault
+    uint64 va = r_stval();//导致异常的虚拟地址
+    char *mem;
+    if (va >= MAXVA)
+      p->killed = 1;
+    else {
+      pte_t *pte = walk(p->pagetable, va, 0);
+      if (pte == 0)//pte无效
+        p->killed = 1;
+      else if ((*pte & PTE_RSW) == 0 || (*pte & PTE_U) == 0 || (*pte & PTE_V) == 0)
+        p->killed = 1;
+      else if ((mem = kalloc()) == 0)//分配物理内存（失败）
+        p->killed = 1;
+      else {
+        uint64 pa = PTE2PA(*pte);//原页面的物理地址
+        memmove((char*)mem, (char*)pa, PGSIZE);//将原页面的数据复制到新页面
+        kfree((void*)pa);//释放原页面的物理内存（或令引用数-1）
+        uint flags = PTE_FLAGS(*pte);
+        *pte = (PA2PTE(mem) | flags | PTE_W);//修改pte对应的物理地址，并改为可写
+        *pte &= ~PTE_RSW;//取消COW
+      }
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
+extern int referenceNumber[PHYSTOP/PGSIZE];
+extern struct spinlock referenceLock;
 
 /*
  * the kernel's page table.
@@ -308,20 +313,28 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+
+    if (*pte & PTE_W) {//当父进程内存页面可写时：将页面设为COW且只读
+      *pte |= PTE_RSW;
+      *pte &= ~PTE_W;
+    }
+
     pa = PTE2PA(*pte);
+
+    acquire(&referenceLock);
+    referenceNumber[pa / PGSIZE] ++;//引用数+1
+    release(&referenceLock);
+
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){//将子进程的虚拟地址映射到父进程的物理内存上
       goto err;
     }
   }
@@ -358,6 +371,27 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+
+    struct proc *p = myproc();
+    pte_t *pte = walk(pagetable, va0, 0);
+    if (*pte == 0)
+      p->killed = 1;
+
+    if ((va0 < p->sz) && (*pte & PTE_V) && (*pte & PTE_RSW)) {//pte是一个COW页
+      char *mem;
+      if ((mem = kalloc()) == 0) {//内存分配失败
+        p->killed = 1;
+      }
+      else {//内存分配成功
+        memmove(mem, (char*)pa0, PGSIZE);//将内存复制到新的页面
+        uint flags = PTE_FLAGS(*pte);
+        uvmunmap(pagetable, va0, 1, 1);//取消原有的映射
+        *pte = (PA2PTE(mem) | flags | PTE_W);//修改pte对应的物理地址，并改为可写
+        *pte &= ~PTE_RSW;//取消COW
+        pa0 = (uint64)mem;//pa0指向新的物理地址
+      }
+    }
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
