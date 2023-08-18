@@ -102,7 +102,25 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
+  acquire(&e1000_lock);//为e1000加锁，防止多进程同时发送数据导致出错
+
+  uint32 TXBufferIndex = regs[E1000_TDT];//获取TX缓冲区描述符索引
+  struct tx_desc *TXDescriptor = &tx_ring[TXBufferIndex];//获取TX缓冲区的描述符
   
+  if(!(TXDescriptor->status & E1000_TXD_STAT_DD)) {//缓冲区中的数据尚未传输完成，返回错误
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(tx_mbufs[TXBufferIndex])//释放已完成传输的mbuf
+    mbuffree(tx_mbufs[TXBufferIndex]);
+  
+  TXDescriptor->addr = (uint64)m->head;//待发送数据的地址
+  TXDescriptor->length = m->len;//待发送数据的长度
+  TXDescriptor->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;//设置cmd字段，表示该数据是一个完整的数据包，且发送完成后需要将E1000_TXD_STAT_DD置1
+  regs[E1000_TDT] = (regs[E1000_TDT] + 1) % TX_RING_SIZE;//切换到环形缓冲区中的下一个位置
+  
+  release(&e1000_lock);//解锁
   return 0;
 }
 
@@ -115,6 +133,20 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  while(1) {
+    uint32 RXBufferIndex = (regs[E1000_RDT] + 1) % RX_RING_SIZE;//获取RX缓冲区描述符索引
+    struct rx_desc *RXDescriptor = &rx_ring[RXBufferIndex];//获取RX缓冲区的描述符
+    
+    if(!(RXDescriptor->status & E1000_RXD_STAT_DD))//已接收完毕
+      return;
+
+    rx_mbufs[RXBufferIndex]->len = RXDescriptor->length;//待接收数据的长度
+    net_rx(rx_mbufs[RXBufferIndex]);//将mbuf传递给网络栈
+    rx_mbufs[RXBufferIndex] = mbufalloc(0);//分配新mbuf
+    RXDescriptor->addr = (uint64)rx_mbufs[RXBufferIndex]->head;//记录新地址
+    RXDescriptor->status = 0;//状态位置0
+    regs[E1000_RDT] = RXBufferIndex;//更新寄存器中的RX缓冲区描述符索引
+  }
 }
 
 void
