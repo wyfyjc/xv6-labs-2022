@@ -6,6 +6,12 @@
 #include "proc.h"
 #include "defs.h"
 
+#include "stat.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -68,9 +74,33 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    setkilled(p);
+    uint64 va = r_stval();//获取地址
+    if ((r_scause() == 13 || r_scause() == 15)) {
+      struct proc *p = myproc();
+      struct vma *v = findvma(p, va);
+      if (v == 0)
+        goto printOtherScause;
+
+      void *pa = kalloc();//分配物理页
+      if (pa == 0)
+        panic("usertrap: vma kalloc");
+      memset(pa, 0, PGSIZE);//初始化为空
+
+      begin_op();//获取文件系统锁
+      ilock(v->f->ip);//锁定VMA对应的inode
+      readi(v->f->ip, 0, (uint64)pa, v->offset + PGROUNDDOWN(va - v->vastart), PGSIZE);//读取到物理页
+      iunlock(v->f->ip);//解锁inode
+      end_op();//释放文件系统锁
+
+      if (mappages(p->pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W | PTE_U) < 0)//将物理页映射到虚拟地址上
+        panic("usertrap: vma mappages");
+    }
+    else { 
+    printOtherScause:
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   }
 
   if(killed(p))

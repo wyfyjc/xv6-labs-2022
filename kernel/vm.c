@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "fcntl.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -435,5 +440,33 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void
+vmaunmap(pagetable_t pagetable, uint64 va, uint64 length, struct vma *v)
+{
+  uint64 a;
+  pte_t *pte;
+  for(a = va; a < va + length; a += PGSIZE) {//遍历要取消映射的地址
+    pte = walk(pagetable, a, 0);//获取页表
+    if(*pte & PTE_V){//页表有效
+      uint64 pa = PTE2PA(*pte);
+      if((*pte & PTE_D) && (v->flags & MAP_SHARED)) {//脏页面，需要写回
+        begin_op();//获取文件系统锁
+        ilock(v->f->ip);
+        uint64 offset = a - v->vastart;//偏移量
+        if(offset < 0)//首页非整页
+          writei(v->f->ip, 0, pa - offset, v->offset, PGSIZE + offset);
+        else if(offset + PGSIZE > v->sz)//末页非整页
+          writei(v->f->ip, 0, pa, v->offset + offset, v->sz - offset);
+        else//整页
+          writei(v->f->ip, 0, pa, v->offset + offset, PGSIZE);
+        iunlock(v->f->ip);
+        end_op();//释放文件系统锁
+      }
+      kfree((void*)pa);
+      *pte = 0;
+    }
   }
 }

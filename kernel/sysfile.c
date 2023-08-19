@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -502,4 +503,91 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr, sz, offset;
+  int prot, flags, fd; struct file *f;
+
+  //获取参数
+  argaddr(0, &addr);
+  argaddr(1, &sz);
+  argint(2, &prot);
+  argint(3, &flags);
+  argfd(4, &fd, &f);
+  argaddr(5, &offset);
+
+  //权限不足
+  if((!f->readable && (prot & (PROT_READ))) || (!f->writable && (prot & PROT_WRITE) && !(flags & MAP_PRIVATE)))
+    return -1;
+
+  sz = PGROUNDUP(sz);
+
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  uint64 vaend = TRAPFRAME;
+
+  acquire(&p->lock);//获取proc锁
+  for(int i = 0; i < NVMA; i++) {
+    struct vma *vv = &p->vmas[i];
+    if(vv->valid == 0) {//vma空闲
+      if(v == 0) {
+        v = &p->vmas[i];
+        v->valid = 1;
+      }
+    }
+    else if(vv->vastart < vaend)
+      vaend = PGROUNDDOWN(vv->vastart);
+  }
+  release(&p->lock);//释放proc锁
+
+  //将参数存入vma
+  v->vastart = vaend - sz;
+  v->sz = sz;
+  v->prot = prot;
+  v->flags = flags;
+  v->f = f;
+  v->offset = offset;
+  filedup(v->f);//增加引用计数
+  return v->vastart;
+}
+
+//找出映射区域包含此地址的vma
+struct vma *findvma(struct proc *p, uint64 va) {
+  for(int i = 0; i < NVMA; i++) {
+    struct vma *vv = &p->vmas[i];
+    if(vv->valid == 1 && va >= vv->vastart && va < vv->vastart + vv->sz) {
+      return vv;
+    }
+  }
+  return 0;
+}
+
+uint64
+sys_munmap(void)
+{
+  //获取参数
+  uint64 addr, sz;
+  argaddr(0, &addr);
+  argaddr(1, &sz);
+
+  struct proc *p = myproc();
+  struct vma *v = findvma(p, addr);//找出映射区域包含此地址的vma
+  if(v == 0)//所有vma均不包含此地址
+    return -1;
+
+  vmaunmap(p->pagetable, addr, sz, v);//解除映射
+  if(addr <= v->vastart && addr + sz > v->vastart) {//vma起点的映射被解除
+    v->vastart = addr + sz;//重新计算解除映射后的起点
+    v->offset += addr + sz - v->vastart;//重新计算解除映射后的偏移量
+  }
+  v->sz -= sz;//计算解除映射后的大小
+
+  if(v->sz <= 0) {//vma为空
+    fileclose(v->f);//关闭映射的文件
+    v->valid = 0;//vma设为空闲
+  }
+  return 0;  
 }
