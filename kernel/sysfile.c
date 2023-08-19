@@ -323,11 +323,30 @@ sys_open(void)
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
+    int depth = 0;//链接深度
+    while(1) {//对symlink进行递归查找
+      if((ip = namei(path)) == 0){//路径错误
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if(ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {//是符号链接文件
+        if(++depth > 10) {//链接深度过大，视为循环
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        if(readi(ip, 0, (uint64)path, 0, MAXPATH) < 0) {//读取inode失败
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        iunlockput(ip);
+      }
+      else {
+        break;
+      }
     }
-    ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -501,5 +520,31 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  struct inode *ip;
+  char target[MAXPATH], path[MAXPATH];//存储目标路径和符号链接路径
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();//获取文件系统锁
+
+  ip = create(path, T_SYMLINK, 0, 0);//创建T_SYMLINK文件
+  if(ip == 0){//创建失败
+    end_op();
+    return -1;
+  }
+
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)) < 0) {//写入目标路径
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);//解锁inode
+  end_op();//释放文件系统锁
   return 0;
 }
